@@ -187,6 +187,101 @@ Navigate to: file:///path/to/page.html
 | Large (>= 18px regular, >= 14px bold) | **3.0 : 1** |
 | UI components and icons | **3.0 : 1** |
 
+## WAVE False Alarms & How to Avoid Them
+
+WAVE evaluates the DOM **after JavaScript runs**, at the initial scroll position (top of page). This causes predictable false positives that must be distinguished from real failures.
+
+### 1 — GSAP scroll animations (`opacity: 0` → reported as 1:1 contrast)
+
+`gsap.fromTo()` immediately applies the FROM state as an inline style the moment the script runs. Every element targeted by a scroll-triggered fade-in gets `opacity: 0` before any scrolling occurs. WAVE computes the rendered text color including opacity, so `color: #022b45` at `opacity: 0` becomes `rgba(2,43,69,0)` — a 1:1 contrast failure.
+
+**Diagnosis**: Click the WAVE error icon — the element disappears. WAVE's code panel shows `color: rgba(r,g,b,0)` with alpha = 0.
+
+**Fix**: Replace `opacity` with GSAP's `autoAlpha` in all content animation vars.
+
+```javascript
+// BEFORE — causes WAVE false alarms
+gsap.set('.hero-title', { opacity: 0, y: 30 });
+gsap.to('.hero-title',  { opacity: 1, y: 0, duration: 1 });
+
+// AFTER — WAVE skips visibility:hidden elements, no false alarm
+gsap.set('.hero-title', { autoAlpha: 0, y: 30 });
+gsap.to('.hero-title',  { autoAlpha: 1, y: 0, duration: 1 });
+```
+
+`autoAlpha: 0` sets `opacity: 0; visibility: hidden`. WAVE's documented rule: *"Errors are only reported on elements visible to users"* — `visibility: hidden` is explicitly excluded from contrast checks.
+
+Apply to all `gsap.set`, `gsap.fromTo`, and `gsap.to` calls that fade content in. Do **not** apply to background image wrappers or decorative elements that already use `aria-hidden`.
+
+### 2 — Background-image elements (reported as 1:1 contrast)
+
+Elements that use a child div for `background-image` (and a `::after` gradient overlay for the dark backdrop) have **no `background-color`** on the container. WAVE can't load images or evaluate gradients, so it falls back to white. White text on white = 1:1.
+
+**Diagnosis**: Hero sections with photos behind text flagged at 1:1 despite visually clear contrast.
+
+**Fix**: Add a solid `background-color` fallback matching the darkest gradient value. This is invisible to visual users (the image covers it) but gives WAVE a computable dark color.
+
+```css
+/* The gradient goes to rgba(4,14,25,.97) at the bottom */
+.hero-a {
+  background-color: #040e19; /* fallback for contrast tools that can't read background-image */
+  /* rest of rules... */
+}
+.hero-b-left {
+  background-color: #040e19;
+}
+```
+
+Note: `hero-c` uses `background: #040f1c` directly (no child image div), so it never had this issue.
+
+### 3 — Low-opacity decorative glyphs (chevrons, watermarks)
+
+Elements with `opacity: 0.4` or similar applied via CSS/GSAP inherit a dimmed version of their parent's text color. WAVE computes this as the rendered color and flags it.
+
+**Common culprit**: Dropdown chevrons (`▾`) inside nav links styled with `opacity: .4`.
+
+**Fix**: `aria-hidden="true"` — these are purely decorative; the link text already conveys the interactive meaning.
+
+```html
+<!-- BEFORE -->
+<a href="#">Our Work <span class="snav-chev">▾</span></a>
+
+<!-- AFTER -->
+<a href="#">Our Work <span class="snav-chev" aria-hidden="true">▾</span></a>
+```
+
+Similarly for oversized watermark text (giant serif letters behind content):
+```html
+<div class="tq-bg" aria-hidden="true">"</div>
+<div class="co-type-bg" aria-hidden="true">Water</div>
+```
+
+### 4 — Form labels not programmatically linked
+
+WAVE flags `<label>` elements that exist visually but are not connected to their input via `for`/`id`. These show as "Missing form label" errors, not contrast errors.
+
+**Fix**: Add matching `for` and `id` attributes.
+
+```html
+<!-- BEFORE -->
+<label class="f-label">Email Address</label>
+<input class="f-input" type="email" placeholder="alex@example.com">
+
+<!-- AFTER -->
+<label class="f-label" for="f-email">Email Address</label>
+<input id="f-email" class="f-input" type="email" placeholder="alex@example.com">
+```
+
+### False alarm vs. real failure — decision table
+
+| WAVE symptom | Click element → it disappears? | Likely cause | Fix |
+|---|---|---|---|
+| 1:1 contrast on heading | Yes | GSAP `opacity: 0` inline | Switch to `autoAlpha` |
+| 1:1 contrast on hero text | No | No `background-color` fallback on image container | Add solid dark `background-color` |
+| Low contrast on tiny glyph | N/A | Decorative icon with low opacity | `aria-hidden="true"` |
+| Low contrast on label text | No | Real failure — muted color on light bg | Darken the color token |
+| Missing form label | N/A | No `for`/`id` association | Add `for`/`id` pair |
+
 ## Limitations
 
 - axe-core **skips** elements where background is a CSS gradient, `background-image`,
@@ -196,6 +291,8 @@ Navigate to: file:///path/to/page.html
 - Hover and focus states are not evaluated by either tool — test manually
 - Decorative elements (watermarks, icon chevrons, spacers) should receive
   `aria-hidden="true"` rather than contrast fixes
+- WAVE evaluates all DOM elements regardless of scroll position — elements hidden by
+  scroll-triggered JS animations will be flagged unless using `autoAlpha` or `visibility: hidden`
 
 ## Resources
 
