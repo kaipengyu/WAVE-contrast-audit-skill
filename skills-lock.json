@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "wave-contrast-audit": {
+      "source": "kaipengyu/WAVE-contrast-audit-skill",
+      "sourceType": "github",
+      "computedHash": "ea4d25a35e148725440d0bfd192fe91c2a1c83e2e0a3e39f5bd3482f700c3328"
+    }
+  }
+}
