@@ -1,420 +1,205 @@
 ---
-name: accessibility-compliance
-description: Implement WCAG 2.2 compliant interfaces with mobile accessibility, inclusive design patterns, and assistive technology support. Use when auditing accessibility, implementing ARIA patterns, building for screen readers, or ensuring inclusive user experiences.
+name: wave-contrast-audit
+description: Audit a live webpage for WCAG color contrast failures using axe-core injected via Playwright, then map every failing color pair to its exact CSS rule and apply compliant fixes. Use when a WAVE report shows contrast errors or when asked to fix accessibility contrast issues on a deployed page.
 ---
 
-# Accessibility Compliance
+# WAVE Contrast Audit
 
-Master accessibility implementation to create inclusive experiences that work for everyone, including users with disabilities.
+Systematically find and fix every color contrast violation on a live page using axe-core for precise data, then trace failures back to CSS source rules.
 
 ## When to Use This Skill
 
-- Implementing WCAG 2.2 Level AA or AAA compliance
-- Building screen reader accessible interfaces
-- Adding keyboard navigation to interactive components
-- Implementing focus management and focus trapping
-- Creating accessible forms with proper labeling
-- Supporting reduced motion and high contrast preferences
-- Building mobile accessibility features (iOS VoiceOver, Android TalkBack)
-- Conducting accessibility audits and fixing violations
+- A WAVE report shows contrast errors on a deployed page
+- User shares a WAVE report URL (`wave.webaim.org/report#/...`)
+- Asked to "fix contrast issues" or "make the site WCAG AA compliant"
+- After a design system token change that may have introduced failures
 
-## Core Capabilities
+## Core Workflow
 
-### 1. WCAG 2.2 Guidelines
+### Step 1 — Navigate to the live page (not the WAVE report)
 
-- Perceivable: Content must be presentable in different ways
-- Operable: Interface must be navigable with keyboard and assistive tech
-- Understandable: Content and operation must be clear
-- Robust: Content must work with current and future assistive technologies
+Always run axe-core on the **actual page**, not the WAVE report wrapper.
 
-### 2. ARIA Patterns
-
-- Roles: Define element purpose (button, dialog, navigation)
-- States: Indicate current condition (expanded, selected, disabled)
-- Properties: Describe relationships and additional info (labelledby, describedby)
-- Live regions: Announce dynamic content changes
-
-### 3. Keyboard Navigation
-
-- Focus order and tab sequence
-- Focus indicators and visible focus states
-- Keyboard shortcuts and hotkeys
-- Focus trapping for modals and dialogs
-
-### 4. Screen Reader Support
-
-- Semantic HTML structure
-- Alternative text for images
-- Proper heading hierarchy
-- Skip links and landmarks
-
-### 5. Mobile Accessibility
-
-- Touch target sizing (44x44dp minimum)
-- VoiceOver and TalkBack compatibility
-- Gesture alternatives
-- Dynamic Type support
-
-## Quick Reference
-
-### WCAG 2.2 Success Criteria Checklist
-
-| Level | Criterion | Description                                          |
-| ----- | --------- | ---------------------------------------------------- |
-| A     | 1.1.1     | Non-text content has text alternatives               |
-| A     | 1.3.1     | Info and relationships programmatically determinable |
-| A     | 2.1.1     | All functionality keyboard accessible                |
-| A     | 2.4.1     | Skip to main content mechanism                       |
-| AA    | 1.4.3     | Contrast ratio 4.5:1 (text), 3:1 (large text)        |
-| AA    | 1.4.11    | Non-text contrast 3:1                                |
-| AA    | 2.4.7     | Focus visible                                        |
-| AA    | 2.5.8     | Target size minimum 24x24px (NEW in 2.2)             |
-| AAA   | 1.4.6     | Enhanced contrast 7:1                                |
-| AAA   | 2.5.5     | Target size minimum 44x44px                          |
-
-## Key Patterns
-
-### Pattern 1: Accessible Button
-
-```tsx
-interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: "primary" | "secondary";
-  isLoading?: boolean;
-}
-
-function AccessibleButton({
-  children,
-  variant = "primary",
-  isLoading = false,
-  disabled,
-  ...props
-}: ButtonProps) {
-  return (
-    <button
-      // Disable when loading
-      disabled={disabled || isLoading}
-      // Announce loading state to screen readers
-      aria-busy={isLoading}
-      // Describe the button's current state
-      aria-disabled={disabled || isLoading}
-      className={cn(
-        // Visible focus ring
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2",
-        // Minimum touch target size (44x44px)
-        "min-h-[44px] min-w-[44px]",
-        variant === "primary" && "bg-primary text-primary-foreground",
-        (disabled || isLoading) && "opacity-50 cursor-not-allowed",
-      )}
-      {...props}
-    >
-      {isLoading ? (
-        <>
-          <span className="sr-only">Loading</span>
-          <Spinner aria-hidden="true" />
-        </>
-      ) : (
-        children
-      )}
-    </button>
-  );
-}
+```
+Navigate to: https://example.com/page.html
 ```
 
-### Pattern 2: Accessible Modal Dialog
+### Step 2 — Inject and run axe-core for exact color pairs
 
-```tsx
-import * as React from "react";
-import { FocusTrap } from "@headlessui/react";
+This gives you precise foreground/background hex values, contrast ratios, CSS selectors, and font sizes — far more actionable than clicking WAVE icons one by one.
 
-interface DialogProps {
-  isOpen: boolean;
-  onClose: () => void;
-  title: string;
-  children: React.ReactNode;
-}
+```javascript
+async () => {
+  const script = document.createElement('script');
+  script.src = 'https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.9.1/axe.min.js';
+  document.head.appendChild(script);
+  await new Promise(r => script.onload = r);
 
-function AccessibleDialog({ isOpen, onClose, title, children }: DialogProps) {
-  const titleId = React.useId();
-  const descriptionId = React.useId();
+  const results = await axe.run({ runOnly: ['color-contrast'] });
 
-  // Close on Escape key
-  React.useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && isOpen) {
-        onClose();
+  // Deduplicate by unique fg+bg pair
+  const pairs = {};
+  for (const v of results.violations) {
+    for (const node of v.nodes) {
+      for (const rel of node.any) {
+        if (rel.data?.fgColor) {
+          const key = `${rel.data.fgColor}__on__${rel.data.bgColor}`;
+          if (!pairs[key]) {
+            pairs[key] = {
+              fg: rel.data.fgColor,
+              bg: rel.data.bgColor,
+              ratio: rel.data.contrastRatio,
+              fontSize: rel.data.fontSize,
+              fontWeight: rel.data.fontWeight,
+              required: rel.data.expectedContrastRatio,
+              count: 0,
+              selector: node.target[0]
+            };
+          }
+          pairs[key].count++;
+        }
       }
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
-
-  // Prevent body scroll when open
-  React.useEffect(() => {
-    if (isOpen) {
-      document.body.style.overflow = "hidden";
     }
-    return () => {
-      document.body.style.overflow = "";
-    };
-  }, [isOpen]);
-
-  if (!isOpen) return null;
-
-  return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby={titleId}
-      aria-describedby={descriptionId}
-    >
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 bg-black/50"
-        aria-hidden="true"
-        onClick={onClose}
-      />
-
-      {/* Focus trap container */}
-      <FocusTrap>
-        <div className="fixed inset-0 flex items-center justify-center p-4">
-          <div className="bg-background rounded-lg shadow-lg max-w-md w-full p-6">
-            <h2 id={titleId} className="text-lg font-semibold">
-              {title}
-            </h2>
-            <div id={descriptionId}>{children}</div>
-            <button
-              onClick={onClose}
-              className="absolute top-4 right-4"
-              aria-label="Close dialog"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-      </FocusTrap>
-    </div>
-  );
+  }
+  return {
+    total: results.violations.reduce((a, v) => a + v.nodes.length, 0),
+    pairs: Object.values(pairs).sort((a, b) => a.ratio - b.ratio)
+  };
 }
 ```
 
-### Pattern 3: Accessible Form
+### Step 3 — Interpret the results
 
-```tsx
-function AccessibleForm() {
-  const [errors, setErrors] = React.useState<Record<string, string>>({});
+For each unique pair, note:
+- **fg + bg** — the actual rendered hex values (rgba already resolved to hex)
+- **ratio** — current contrast (e.g. 3.1:1)
+- **required** — 4.5 (normal text) or 3.0 (large text >= 18px / >= 14px bold)
+- **selector** — CSS selector pointing to the failing element
+- **count** — how many elements share this exact pair
 
-  return (
-    <form aria-describedby="form-errors" noValidate>
-      {/* Error summary for screen readers */}
-      {Object.keys(errors).length > 0 && (
-        <div
-          id="form-errors"
-          role="alert"
-          aria-live="assertive"
-          className="bg-destructive/10 border border-destructive p-4 rounded-md mb-4"
-        >
-          <h2 className="font-semibold text-destructive">
-            Please fix the following errors:
-          </h2>
-          <ul className="list-disc list-inside mt-2">
-            {Object.entries(errors).map(([field, message]) => (
-              <li key={field}>
-                <a href={`#${field}`} className="underline">
-                  {message}
-                </a>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+### Step 4 — Find the CSS source rules
 
-      {/* Required field with error */}
-      <div className="space-y-2">
-        <label htmlFor="email" className="block font-medium">
-          Email address
-          <span aria-hidden="true" className="text-destructive ml-1">
-            *
-          </span>
-          <span className="sr-only">(required)</span>
-        </label>
-        <input
-          id="email"
-          name="email"
-          type="email"
-          required
-          aria-required="true"
-          aria-invalid={!!errors.email}
-          aria-describedby={errors.email ? "email-error" : "email-hint"}
-          className={cn(
-            "w-full px-3 py-2 border rounded-md",
-            errors.email && "border-destructive",
-          )}
-        />
-        {errors.email ? (
-          <p id="email-error" className="text-sm text-destructive" role="alert">
-            {errors.email}
-          </p>
-        ) : (
-          <p id="email-hint" className="text-sm text-muted-foreground">
-            We'll never share your email.
-          </p>
-        )}
-      </div>
+Use `Grep` to locate every CSS rule producing the failing color:
 
-      <button type="submit" className="mt-4">
-        Submit
-      </button>
-    </form>
-  );
-}
+```bash
+# Search for the failing value (rgba or hex)
+grep -n "rgba(255,255,255,.45)\|#7a7878\|var(--steel)" src/styles.css
+
+# Or search by selector
+grep -n "\.sb-num\|\.btn-water" src/styles.css
 ```
 
-### Pattern 4: Skip Navigation Link
+Read the surrounding context to confirm background color and element role.
 
-```tsx
-function SkipLink() {
-  return (
-    <a
-      href="#main-content"
-      className={cn(
-        // Hidden by default, visible on focus
-        "sr-only focus:not-sr-only",
-        "focus:absolute focus:top-4 focus:left-4 focus:z-50",
-        "focus:bg-background focus:px-4 focus:py-2 focus:rounded-md",
-        "focus:ring-2 focus:ring-primary",
-      )}
-    >
-      Skip to main content
-    </a>
-  );
-}
+### Step 5 — Calculate compliant replacement values
 
-// In layout
-function Layout({ children }) {
-  return (
-    <>
-      <SkipLink />
-      <header>...</header>
-      <nav aria-label="Main navigation">...</nav>
-      <main id="main-content" tabIndex={-1}>
-        {children}
-      </main>
-      <footer>...</footer>
-    </>
-  );
-}
+**For white text on dark backgrounds (`rgba(255,255,255, A)`):**
+
+| Required | Min alpha on `#022b45` | Min alpha on `#034f7d` | Min alpha on `#7a4f99` |
+|----------|------------------------|------------------------|------------------------|
+| 4.5:1    | >= 0.75 (use **0.82**) | >= 0.75 (use **0.82**) | >= 0.85 (use **0.88**) |
+| 3.0:1    | >= 0.50 (use **0.60**) | >= 0.52 (use **0.60**) | >= 0.60 (use **0.68**) |
+
+**For brand blue on light backgrounds:**
+- `#1499e8` on white = 3.1:1 (fail) — use `#0d77c4` for button bg (4.72:1)
+- `#1499e8` as text on white — use `#0d77c4`
+
+**For brand blue as text on dark backgrounds:**
+- `#1499e8` on `#022b45` = 2.8:1 (fail) — use `#8accf4` (~5.0:1)
+
+**For muted gray on white/cream:**
+- `#7a7878` on white = 4.4:1 (fail) — darken to `#686666` (5.7:1)
+- `#7a7878` on `#ededed` = 3.7:1 (fail) — `#686666` also passes cream (4.9:1)
+
+**Manual luminance calculation (when needed):**
+```
+Contrast = (L_lighter + 0.05) / (L_darker + 0.05)
+L = 0.2126 * R_lin + 0.7152 * G_lin + 0.0722 * B_lin
+R_lin = ((R/255 + 0.055) / 1.055)^2.4   for values > 0.04045
+R_lin = (R/255) / 12.92                  for values <= 0.04045
 ```
 
-### Pattern 5: Live Region for Announcements
+### Step 6 — Apply fixes efficiently
 
-```tsx
-function useAnnounce() {
-  const [message, setMessage] = React.useState("");
+Batch all changes in a single Python pass to avoid making 50+ Edit calls:
 
-  const announce = React.useCallback(
-    (text: string, priority: "polite" | "assertive" = "polite") => {
-      setMessage(""); // Clear first to ensure re-announcement
-      setTimeout(() => setMessage(text), 100);
-    },
-    [],
-  );
+```python
+with open('styles.css', 'r') as f:
+    css = f.read()
 
-  const Announcer = () => (
-    <div
-      role="status"
-      aria-live="polite"
-      aria-atomic="true"
-      className="sr-only"
-    >
-      {message}
-    </div>
-  );
+changes = [
+    ('--steel: #7a7878',         '--steel: #686666'),
+    ('.btn-water { background: var(--vibrant-blue)',
+     '.btn-water { background: #0d77c4'),
+    # Add targeted string replacements for each failing rule...
+]
 
-  return { announce, Announcer };
-}
+results = []
+for old, new in changes:
+    if old in css:
+        css = css.replace(old, new)
+        results.append(f"  changed: {old[:50]}")
+    else:
+        results.append(f"  NOT FOUND: {old[:50]}")
 
-// Usage
-function SearchResults({ results, isLoading }) {
-  const { announce, Announcer } = useAnnounce();
+with open('styles.css', 'w') as f:
+    f.write(css)
 
-  React.useEffect(() => {
-    if (!isLoading && results) {
-      announce(`${results.length} results found`);
-    }
-  }, [results, isLoading, announce]);
-
-  return (
-    <>
-      <Announcer />
-      <ul>{/* results */}</ul>
-    </>
-  );
-}
+print('\n'.join(results))
 ```
 
-## Color Contrast Requirements
+> **Warning:** `rgba(255,255,255,.X)` appears in backgrounds, borders, and
+> box-shadows — not only text color. Always read context before replacing.
+> Use targeted string matches (include surrounding lines) rather than broad
+> single-value replacements.
 
-```typescript
-// Contrast ratio utilities
-function getContrastRatio(foreground: string, background: string): number {
-  const fgLuminance = getLuminance(foreground);
-  const bgLuminance = getLuminance(background);
-  const lighter = Math.max(fgLuminance, bgLuminance);
-  const darker = Math.min(fgLuminance, bgLuminance);
-  return (lighter + 0.05) / (darker + 0.05);
-}
+### Step 7 — Verify fixes
 
-// WCAG requirements
-const CONTRAST_REQUIREMENTS = {
-  // Normal text (<18pt or <14pt bold)
-  normalText: {
-    AA: 4.5,
-    AAA: 7,
-  },
-  // Large text (>=18pt or >=14pt bold)
-  largeText: {
-    AA: 3,
-    AAA: 4.5,
-  },
-  // UI components and graphics
-  uiComponents: {
-    AA: 3,
-  },
-};
+Re-run the Step 2 script on the updated page. Target: **0 color-contrast violations**.
+
+If the file is only local (not yet deployed), navigate Playwright directly:
+```
+Navigate to: file:///path/to/page.html
 ```
 
-## Best Practices
+---
 
-1. **Use Semantic HTML**: Prefer native elements over ARIA when possible
-2. **Test with Real Users**: Include people with disabilities in user testing
-3. **Keyboard First**: Design interactions to work without a mouse
-4. **Don't Disable Focus Styles**: Style them, don't remove them
-5. **Provide Text Alternatives**: All non-text content needs descriptions
-6. **Support Zoom**: Content should work at 200% zoom
-7. **Announce Changes**: Use live regions for dynamic content
-8. **Respect Preferences**: Honor prefers-reduced-motion and prefers-contrast
+## Common Failure Patterns
 
-## Common Issues
+| Pattern | Failing value | Fix |
+|---------|--------------|-----|
+| Sidebar nav links on dark bg | `rgba(255,255,255,.5-.62)` | Raise to `.82` |
+| Section labels on dark bg | `rgba(255,255,255,.18-.25)` | Raise to `.75` |
+| Body text on dark bg | `rgba(255,255,255,.52-.62)` | Raise to `.85` |
+| Small labels/captions on dark bg | `rgba(255,255,255,.38-.45)` | Raise to `.82` |
+| Any text on purple bg (#7a4f99) | alpha < .85 | Raise to `.88` |
+| CTA button (white on #1499e8) | 3.1:1 | Change bg to `#0d77c4` |
+| Muted gray on white | `#7a7878` | Darken to `#686666` |
+| Brand blue as text on white | `#1499e8` | Change to `#0d77c4` |
+| Brand blue as text on dark | `#1499e8` | Change to `#8accf4` |
+| Brand palette 25% tint on color bg | e.g. `#ded3e6` on purple | Use `var(--white)` |
 
-- **Missing alt text**: Images without descriptions
-- **Poor color contrast**: Text hard to read against background
-- **Keyboard traps**: Focus stuck in component
-- **Missing labels**: Form inputs without associated labels
-- **Auto-playing media**: Content that plays without user initiation
-- **Inaccessible custom controls**: Recreating native functionality poorly
-- **Missing skip links**: No way to bypass repetitive content
-- **Focus order issues**: Tab order doesn't match visual order
+## WCAG 2.2 AA Thresholds (Quick Reference)
 
-## Testing Tools
+| Text size | Required ratio |
+|-----------|---------------|
+| Normal (< 18px regular, < 14px bold) | **4.5 : 1** |
+| Large (>= 18px regular, >= 14px bold) | **3.0 : 1** |
+| UI components and icons | **3.0 : 1** |
 
-- **Automated**: axe DevTools, WAVE, Lighthouse
-- **Manual**: VoiceOver (macOS/iOS), NVDA/JAWS (Windows), TalkBack (Android)
-- **Simulators**: NoCoffee (vision), Silktide (various disabilities)
+## Limitations
+
+- axe-core **skips** elements where background is a CSS gradient, `background-image`,
+  or `filter` — use WAVE's eyedropper tool for those manually
+- WAVE counts each text node individually; axe deduplicates by color pair — expect
+  axe to report fewer total violations than WAVE (e.g. 53 axe vs 187 WAVE)
+- Hover and focus states are not evaluated by either tool — test manually
+- Decorative elements (watermarks, icon chevrons, spacers) should receive
+  `aria-hidden="true"` rather than contrast fixes
 
 ## Resources
 
-- [WCAG 2.2 Guidelines](https://www.w3.org/WAI/WCAG22/quickref/)
-- [WAI-ARIA Authoring Practices](https://www.w3.org/WAI/ARIA/apg/)
-- [A11y Project Checklist](https://www.a11yproject.com/checklist/)
-- [Inclusive Components](https://inclusive-components.design/)
-- [Deque University](https://dequeuniversity.com/)
+- [WAVE Web Accessibility Evaluator](https://wave.webaim.org/)
+- [axe-core CDN](https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.9.1/axe.min.js)
+- [WebAIM Contrast Checker](https://webaim.org/resources/contrastchecker/)
+- [WCAG 2.2 — 1.4.3 Contrast Minimum](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum)
